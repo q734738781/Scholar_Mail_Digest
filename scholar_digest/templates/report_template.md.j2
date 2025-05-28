@@ -1,0 +1,31 @@
+
+# Scholar Digest Report - {{ today_date }}
+
+## High Relevance
+{% for article in articles %}
+{% if article.score == high_threshold %}
+### [{{ article.title }}]({{ article.link }})
+- **Score**: {{ article.score }}
+- **Reason**: {{ article.reason }}
+{% if article.summary %}- **Scholar Summary**: {{ article.summary }}{% endif %}
+{% if article.full_text_summary %}- **Full Text Snippet**: {{ article.full_text_summary | replace('
+', ' ') | truncate(250) }}{% endif %}
+{% if article.email_date_readable %}- **Email Date**: {{ article.email_date_readable }}{% endif %}
+{% endif %}
+{% endfor %}
+
+## Medium Relevance
+{% for article in articles %}
+{% if article.score == medium_threshold %}
+### [{{ article.title }}]({{ article.link }})
+- **Score**: {{ article.score }}
+- **Reason**: {{ article.reason }}
+{% if article.summary %}- **Scholar Summary**: {{ article.summary }}{% endif %}
+{% if article.full_text_summary %}- **Full Text Snippet**: {{ article.full_text_summary | replace('
+', ' ') | truncate(250) }}{% endif %}
+{% if article.email_date_readable %}- **Email Date**: {{ article.email_date_readable }}{% endif %}
+{% endif %}
+{% endfor %}
+
+Report generated on: {{ generation_time }}
+        

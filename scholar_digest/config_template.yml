@@ -1,0 +1,17 @@
+language: zh
+prompt_template: |
+  你是一名资深研究助理。根据给定"标题+摘要"判断与我研究的相关性。我的研究主要聚焦于...
+  仅返回 JSON：{{"score":"High|Medium|Low","reason":"…"}}。
+keywords:
+  include: ["catalyst", "DFT"] # The keyword information will be integrated
+  exclude: []
+llm:
+  model: "google:gemini-2.5-pro-preview-05-06" # Examples: "openai:gpt-3.5-turbo", "google:gemini-pro", "mock:some-name"
+  temperature: 0.1
+scoring:
+  high_threshold: High
+  medium_threshold: Medium
+enrichment:
+  enable_web_article: false
+output:
+  report_dir: reports

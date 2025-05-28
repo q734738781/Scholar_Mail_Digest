@@ -1,0 +1,15 @@
+google-api-python-client
+google-auth-httplib2
+langchain
+langchain-openai
+langchain-google-genai
+pyyaml
+typer
+pandas
+beautifulsoup4
+mistune
+jinja2
+sqlite-utils
+newspaper3k
+readability-lxml
+google_auth_oauthlib
