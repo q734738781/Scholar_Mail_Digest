@@ -47,7 +47,10 @@ def fetch(since: str = None):
 
     # 1. Fetch emails
     typer.echo("Step 1: Fetching emails...")
-    raw_emails = mail_fetcher.get_scholar_alert_emails(last_run_timestamp=start_timestamp)
+    raw_emails = mail_fetcher.get_scholar_alert_emails(
+        last_run_timestamp=start_timestamp,
+        proxy_config=config.get('proxy')
+    )
     if not raw_emails:
         typer.echo("No new emails found. Exiting.")
         raise typer.Exit()
@@ -131,9 +134,25 @@ def fetch(since: str = None):
         typer.echo("Step 5: Web enrichment disabled in config.")
 
     # 6. Build Report
-    # TODO: Report only this scored one
     typer.echo("Step 6: Building report...")
-    report_main() # Calls the report generation logic
+    
+    csv_file_path = os.path.join(config.get('output', {}).get('report_dir', 'reports'), "scholar_articles.csv")
+
+    # Pass start_timestamp directly to get_articles_for_report
+    # report_builder.get_articles_for_report will handle the filtering.
+    articles_for_report_df = report_builder.get_articles_for_report(csv_file_path, start_timestamp=start_timestamp)
+
+    if articles_for_report_df.empty:
+        # Message depends on whether filtering was active
+        if start_timestamp:
+            typer.echo(f"No articles found for reporting on or after {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}.")
+        else:
+            typer.echo("No articles found suitable for reporting by get_articles_for_report.")
+        # report_main will also print its own "No articles suitable" message if it receives an empty df, but this gives more context.
+        _generate_report_logic(articles_df=articles_for_report_df, config=config) # Call _generate_report_logic even if empty, it will handle it
+    else:
+        typer.echo(f"Proceeding to generate report with {len(articles_for_report_df)} article(s).")
+        _generate_report_logic(articles_df=articles_for_report_df, config=config)
 
     # 7. Update last run timestamp
     if latest_email_date_ts:
@@ -149,22 +168,56 @@ def fetch(since: str = None):
 
     typer.echo("Fetch process completed successfully.")
 
+def _generate_report_logic(articles_df: pd.DataFrame = None, config: dict = None): # Renamed and no longer a Typer command, added config
+    """
+    Core logic to generate a report from scored data.
+    If articles_df is provided, it's used directly. Otherwise, articles are loaded from CSV.
+    """
+    if config is None: # Load config if not passed (e.g. for standalone testing if ever needed)
+        config = load_config()
+
+    report_data_df = None
+
+    if articles_df is not None: # Called from fetch command or new report_command
+        if articles_df.empty:
+            # This message will be preceded by more specific messages from fetch or report_command
+            typer.echo("Report logic: Provided article list is empty.")
+        else:
+            typer.echo(f"Report logic: Generating report using {len(articles_df)} provided article(s).")
+        report_data_df = articles_df
+    else: # Should not happen if called by report_command, which pre-loads
+        typer.echo("Report logic: No articles DataFrame provided. Attempting to load all from CSV.")
+        csv_file = os.path.join(config.get('output', {}).get('report_dir', 'reports'), "scholar_articles.csv")
+        # In standalone mode, no start_timestamp is passed, so it gets all reportable articles
+        report_data_df = report_builder.get_articles_for_report(csv_file) # No start_timestamp
+
+    if report_data_df is None or report_data_df.empty:
+        typer.echo("No articles suitable for reporting were found to generate markdown.")
+        # No typer.Exit() here, let the caller decide if it's fatal
+        return
+
+    markdown_content = report_builder.generate_markdown_report(report_data_df)
+    report_file = report_builder.save_report(markdown_content, output_filename_base="scholar_digest_report")
+    typer.echo(f"Report generated: {report_file}")
+
+
 @app.command(name="report")
-def report_main():
+def report_command(): # New Typer command for standalone report
     """Generate a report from existing scored data."""
-    typer.echo("Generating report from existing data...")
+    typer.echo("Standalone report generation initiated...")
     config = load_config()
     csv_file = os.path.join(config.get('output', {}).get('report_dir', 'reports'), "scholar_articles.csv")
     
-    articles_for_report_df = report_builder.get_articles_for_report(csv_file)
+    # Load all reportable articles, no timestamp filter for standalone report
+    articles_to_report_df = report_builder.get_articles_for_report(csv_file_path=csv_file) 
     
-    if articles_for_report_df.empty:
-        typer.echo("No articles suitable for reporting were found.")
-        raise typer.Exit()
-        
-    markdown_content = report_builder.generate_markdown_report(articles_for_report_df)
-    report_file = report_builder.save_report(markdown_content, output_filename_base="scholar_digest_report")
-    typer.echo(f"Report generated: {report_file}")
+    if articles_to_report_df.empty:
+        typer.echo("No articles suitable for reporting were found in the CSV.")
+        # typer.Exit() # Exiting here might be too abrupt if other cleanup is needed.
+        # _generate_report_logic will also state no articles found.
+    
+    _generate_report_logic(articles_df=articles_to_report_df, config=config)
+
 
 @app.command(name="update-ts")
 def update_timestamp_command(timestamp_val: str = typer.Option(None, "--value", help="Timestamp value (Unix or YYYY-MM-DD HH:MM:SS). Defaults to now.")):

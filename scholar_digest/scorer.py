@@ -5,7 +5,8 @@ from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-import os # For API keys
+import os # For API keys and proxy env
+from urllib.parse import urlparse
 
 import time
 import random
@@ -18,6 +19,27 @@ def load_config():
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
+def _apply_proxy_env_if_enabled(proxy_config: dict, apply_to_flag: bool):
+    """Set environment proxy variables based on config for libraries that honor env.
+    This supports SOCKS by using ALL_PROXY, plus HTTP(S)_PROXY fallbacks.
+    """
+    if not proxy_config or not proxy_config.get('enable') or not apply_to_flag:
+        return
+    proxy_url = proxy_config.get('url')
+    if not proxy_url:
+        return
+    # Set both upper and lower case for robustness
+    for key in ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy"]:
+        os.environ[key] = proxy_url
+
+def _requests_proxies_from_url(proxy_url: str):
+    if not proxy_url:
+        return None
+    parsed = urlparse(proxy_url)
+    if not parsed.scheme or not parsed.hostname:
+        return None
+    return {"http": proxy_url, "https": proxy_url}
+
 # Pydantic model for JSON output parsing
 class ArticleScore(BaseModel):
     score: str = Field(description="The relevance score: High, Medium, or Low")
@@ -28,6 +50,12 @@ def get_llm_instance(llm_config):
     temperature = llm_config.get("temperature", 0.2)
 
     provider, model_name = model_identifier.split(":", 1) if ":" in model_identifier else ("openai", model_identifier)
+
+    # Apply proxy env if configured for LLM
+    full_config = load_config()
+    proxy_cfg = full_config.get('proxy', {}) if isinstance(full_config, dict) else {}
+    apply_to_llm = bool(proxy_cfg.get('apply_to', {}).get('llm', True))
+    _apply_proxy_env_if_enabled(proxy_cfg, apply_to_llm)
 
     if provider.lower() == "openai":
         api_key = os.getenv("OPENAI_API_KEY")
@@ -119,6 +147,7 @@ def score_articles(articles_df):
         return articles_df
 
     print(f"Scoring {len(articles_df)} articles using LLM ({llm_config.get('model')})...")
+    # TODO: Parallel processing for scoring
     for index, row in articles_df.iterrows():
         title = str(row['title'] if pd.notna(row['title']) else "")
         summary = str(row['summary'] if pd.notna(row['summary']) else "")
@@ -198,6 +227,11 @@ def enrich_articles_with_web_content(articles_df):
         return articles_df
 
     print(f"Enriching {len(articles_df)} articles with web content...")
+    # Apply proxy for enrichment (used by requests/newspaper3k via env)
+    proxy_cfg = config.get('proxy', {}) if isinstance(config, dict) else {}
+    apply_to_enrichment = bool(proxy_cfg.get('apply_to', {}).get('enrichment', True))
+    _apply_proxy_env_if_enabled(proxy_cfg, apply_to_enrichment)
+    requests_proxies = _requests_proxies_from_url(proxy_cfg.get('url') if proxy_cfg else None) if apply_to_enrichment else None
     full_summaries = []
     for index, row in articles_df.iterrows():
         url = row['link']
@@ -218,7 +252,7 @@ def enrich_articles_with_web_content(articles_df):
             else:
                 import requests
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-                response = requests.get(url, headers=headers, timeout=10)
+                response = requests.get(url, headers=headers, timeout=10, proxies=requests_proxies)
                 response.raise_for_status()
                 doc = ReadabilityDocument(response.content)
                 from bs4 import BeautifulSoup

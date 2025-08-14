@@ -13,8 +13,11 @@ def load_config():
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-def get_articles_for_report(csv_file_path):
-    """Loads articles from CSV, filters by score thresholds, and sorts them."""
+def get_articles_for_report(csv_file_path, start_timestamp: float = None):
+    """
+    Loads articles from CSV, filters by score thresholds, and optionally by start_timestamp.
+    Sorts them by score and then by email_date.
+    """
     config = load_config()
     scoring_config = config.get('scoring', {})
     high_threshold = scoring_config.get('high_threshold', 'High')
@@ -48,6 +51,19 @@ def get_articles_for_report(csv_file_path):
     # Filter articles: include High and Medium. Add Low if explicitly desired for reports.
     # For now, only High and Medium as per typical digest needs.
     report_articles_df = df[df['score'].isin([high_threshold, medium_threshold])].copy()
+    
+    # Filter by start_timestamp if provided
+    if start_timestamp is not None and 'email_date' in report_articles_df.columns:
+        # Ensure email_date is numeric for comparison
+        report_articles_df['email_date'] = pd.to_numeric(report_articles_df['email_date'], errors='coerce')
+        report_articles_df.dropna(subset=['email_date'], inplace=True) # Drop rows where conversion failed
+        
+        report_articles_df = report_articles_df[report_articles_df['email_date'] >= start_timestamp].copy()
+        print(f"Filtered articles for report on or after {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}, {len(report_articles_df)} remaining.")
+    elif start_timestamp is not None:
+        print(f"Warning: start_timestamp provided for report, but 'email_date' column not found. Cannot filter by date.")
+
+
     report_articles_df.sort_values(by=['score_cat', 'email_date'], ascending=[True, False], inplace=True)
     
     # Convert email_date from timestamp to readable string if it exists
@@ -176,28 +192,42 @@ if __name__ == "__main__":
         ],
         'score': ['High', 'Medium', 'Low', 'High', 'Medium'], # Assuming these match config thresholds
         'reason': ['Excellent match', 'Relevant field', 'Out of scope', 'Good keywords', 'Related topic'],
-        'email_date': [datetime(2024,5,20,10,0,0).timestamp(), datetime(2024,5,19,11,0,0).timestamp(), datetime(2024,5,18,12,0,0).timestamp(), datetime(2024,5,20,9,0,0).timestamp(), datetime(2024,5,19,10,0,0).timestamp()],
+        'email_date': [
+            datetime(2024,5,20,10,0,0).timestamp(), 
+            datetime(2024,5,19,11,0,0).timestamp(), 
+            datetime(2024,5,18,12,0,0).timestamp(), 
+            datetime(2024,5,20,9,0,0).timestamp(), 
+            datetime(2024,5,19,10,0,0).timestamp()
+        ],
         'full_text_summary': ['Full text snippet 1...', 'Full text snippet 2...', '', 'Full text snippet 4...', None]
     }
     sample_df = pd.DataFrame(sample_report_data)
     sample_df.to_csv(dummy_csv_path, index=False)
     print(f"Created dummy CSV for report generation: {dummy_csv_path}")
 
-    # 1. Load articles for the report
-    print("\n--- Loading articles for report --- ")
-    articles_to_report = get_articles_for_report(dummy_csv_path)
-    if not articles_to_report.empty:
-        print(f"Loaded {len(articles_to_report)} articles for the report:")
-        print(articles_to_report[['title', 'score', 'email_date_readable']])
+    # 1. Load articles for the report (original test - all relevant articles)
+    print("\n--- Loading all relevant articles for report (original test) --- ")
+    articles_to_report_all = get_articles_for_report(dummy_csv_path)
+    if not articles_to_report_all.empty:
+        print(f"Loaded {len(articles_to_report_all)} articles for the report:")
+        print(articles_to_report_all[['title', 'score', 'email_date_readable']])
     else:
-        print("No articles loaded for the report.")
+        print("No articles loaded for the initial report test.")
 
-    # 2. Generate Markdown
-    print("\n--- Generating Markdown Report --- ")
-    if not articles_to_report.empty:
-        markdown_report_content = generate_markdown_report(articles_to_report)
-        # print("\n--- Markdown Output ---")
-        # print(markdown_report_content)
+    # Test with a timestamp (e.g., only articles from May 20th onwards)
+    print("\n--- Loading articles for report with timestamp filter --- ")
+    test_start_timestamp = datetime(2024,5,20,0,0,0).timestamp()
+    articles_to_report_filtered = get_articles_for_report(dummy_csv_path, start_timestamp=test_start_timestamp)
+    if not articles_to_report_filtered.empty:
+        print(f"Loaded {len(articles_to_report_filtered)} articles for the filtered report (since {datetime.fromtimestamp(test_start_timestamp).strftime('%Y-%m-%d')}):")
+        print(articles_to_report_filtered[['title', 'score', 'email_date_readable']])
+    else:
+        print(f"No articles loaded for the filtered report (since {datetime.fromtimestamp(test_start_timestamp).strftime('%Y-%m-%d')}).")
+
+    # 2. Generate Markdown (using all articles from the first load for this example)
+    print("\n--- Generating Markdown Report (using all loaded articles from original test) --- ")
+    if not articles_to_report_all.empty:
+        markdown_report_content = generate_markdown_report(articles_to_report_all)
         print(f"Markdown report content generated (length: {len(markdown_report_content)}).")
         
         # 3. Save Report
@@ -205,17 +235,14 @@ if __name__ == "__main__":
         saved_file = save_report(markdown_report_content, output_filename_base="daily_scholar_digest")
         print(f"Report generation process complete. Main file: {saved_file}")
 
-        # Example: Convert to HTML (optional)
+        # Optional: Convert to HTML (example)
         # html_output = mistune.html(markdown_report_content)
-        # print("\n--- HTML Output (first 300 chars) ---")
-        # print(html_output[:300] + "...")
         # html_file_path = saved_file.replace(".md", ".html")
         # with open(html_file_path, 'w', encoding='utf-8') as f_html:
         #     f_html.write(html_output)
         # print(f"HTML version saved to: {html_file_path}")
-
     else:
-        print("Skipping report generation and saving as no articles were loaded.")
+        print("Skipping report generation and saving as no articles were loaded in the initial test.")
 
     # To test the template creation, remove the template file from scholar_digest/templates directory
     # and re-run. 

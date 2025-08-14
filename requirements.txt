@@ -13,3 +13,5 @@ sqlite-utils
 newspaper3k
 readability-lxml
 google_auth_oauthlib
+PySocks
+google-auth-httplib2

@@ -15,3 +15,10 @@ enrichment:
   enable_web_article: false
 output:
   report_dir: reports
+proxy:
+  enable: false
+  url: "" # e.g. socks5h://user:pass@127.0.0.1:1080
+  apply_to:
+    email_fetch: true
+    llm: true
+    enrichment: true
