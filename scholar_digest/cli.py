@@ -20,11 +20,32 @@ def load_config():
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
+def _apply_proxy_env_from_config(config: dict):
+    """Set proxy-related environment variables for the current process based on config."""
+    try:
+        proxy_cfg = (config or {}).get('proxy') if isinstance(config, dict) else None
+        if not proxy_cfg or not proxy_cfg.get('enable'):
+            return
+        proxy_url = proxy_cfg.get('url') or ""
+        if not proxy_url:
+            return
+        # Set common proxy environment variables (upper and lower for robustness)
+        for k in ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy"]:
+            os.environ[k] = proxy_url
+        no_proxy = proxy_cfg.get('no_proxy')
+        if no_proxy:
+            os.environ['NO_PROXY'] = no_proxy
+            os.environ['no_proxy'] = no_proxy
+        typer.echo("Proxy environment variables applied from config.")
+    except Exception as e:
+        typer.echo(f"Warning: Failed to apply proxy env from config: {e}")
+
 @app.command()
 def fetch(since: str = None):
     """Fetch new Google Scholar emails, process, score, and generate a report."""
     typer.echo("Starting fetch process...")
     config = load_config()
+    _apply_proxy_env_from_config(config)
     
     start_timestamp = None
     if since:
@@ -47,10 +68,7 @@ def fetch(since: str = None):
 
     # 1. Fetch emails
     typer.echo("Step 1: Fetching emails...")
-    raw_emails = mail_fetcher.get_scholar_alert_emails(
-        last_run_timestamp=start_timestamp,
-        proxy_config=config.get('proxy')
-    )
+    raw_emails = mail_fetcher.get_scholar_alert_emails(last_run_timestamp=start_timestamp)
     if not raw_emails:
         typer.echo("No new emails found. Exiting.")
         raise typer.Exit()
@@ -206,6 +224,7 @@ def report_command(): # New Typer command for standalone report
     """Generate a report from existing scored data."""
     typer.echo("Standalone report generation initiated...")
     config = load_config()
+    _apply_proxy_env_from_config(config)
     csv_file = os.path.join(config.get('output', {}).get('report_dir', 'reports'), "scholar_articles.csv")
     
     # Load all reportable articles, no timestamp filter for standalone report

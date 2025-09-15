@@ -1,5 +1,5 @@
 google-api-python-client
-google-auth-httplib2
+google_auth_oauthlib
 langchain
 langchain-openai
 langchain-google-genai
@@ -13,5 +13,3 @@ sqlite-utils
 newspaper3k
 readability-lxml
 google_auth_oauthlib
-PySocks
-google-auth-httplib2

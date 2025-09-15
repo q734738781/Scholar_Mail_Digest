@@ -11,14 +11,14 @@ llm:
 scoring:
   high_threshold: High
   medium_threshold: Medium
+  parallel:
+    enable: false
+    workers: 4
 enrichment:
   enable_web_article: false
 output:
   report_dir: reports
 proxy:
   enable: false
-  url: "" # e.g. socks5h://user:pass@127.0.0.1:1080
-  apply_to:
-    email_fetch: true
-    llm: true
-    enrichment: true
+  url: "" # Prefer an HTTP proxy here if using Gemini, e.g. http://127.0.0.1:10809
+  no_proxy: "localhost,127.0.0.1"

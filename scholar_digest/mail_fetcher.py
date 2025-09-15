@@ -7,15 +7,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import email
 from datetime import datetime
-from urllib.parse import urlparse, unquote
-
-# Proxy/Gmail HTTP support
-import httplib2
-from google_auth_httplib2 import AuthorizedHttp
-try:
-    import socks  # PySocks
-except Exception:  # pragma: no cover
-    socks = None
+ 
 
 # If modifying these scopes, delete token.json.
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
@@ -43,55 +35,6 @@ def get_credentials():
         with open("token.json", "w") as token:
             token.write(creds.to_json())
     return creds
-
-def _build_http_with_proxy(creds, proxy_url: str):
-    """Create an AuthorizedHttp over httplib2 with SOCKS/HTTP proxy if provided."""
-    if not proxy_url:
-        return AuthorizedHttp(creds)
-    parsed = urlparse(proxy_url)
-    scheme = (parsed.scheme or '').lower()
-    host = parsed.hostname
-    port = parsed.port or (1080 if scheme.startswith('socks') else 8080)
-    username = unquote(parsed.username) if parsed.username else None
-    password = unquote(parsed.password) if parsed.password else None
-
-    # Map scheme to socks proxy type
-    proxy_type = None
-    proxy_rdns = False
-    if scheme in ("socks5", "socks5h"):
-        proxy_type = socks.SOCKS5 if socks else None
-        proxy_rdns = (scheme == "socks5h")
-    elif scheme in ("socks4", "socks4a"):
-        proxy_type = socks.SOCKS4 if socks else None
-        proxy_rdns = (scheme == "socks4a")
-    elif scheme in ("http", "https"):
-        # httplib2 supports HTTP proxies without PySocks
-        proxy_type = httplib2.socks.PROXY_TYPE_HTTP if hasattr(httplib2, 'socks') and hasattr(httplib2.socks, 'PROXY_TYPE_HTTP') else None
-        proxy_rdns = False
-
-    if proxy_type is None:
-        # Fallback: if PySocks is unavailable or scheme unsupported, skip proxy
-        return AuthorizedHttp(creds)
-
-    proxy_info = httplib2.ProxyInfo(proxy_type=proxy_type, proxy_host=host, proxy_port=port, proxy_rdns=proxy_rdns, proxy_user=username, proxy_pass=password)
-    http = httplib2.Http(proxy_info=proxy_info, timeout=60)
-    return AuthorizedHttp(creds, http=http)
-
-def _build_gmail_service(proxy_config: dict = None):
-    creds = get_credentials()
-    use_proxy = False
-    proxy_url = None
-    if proxy_config and isinstance(proxy_config, dict):
-        use_proxy = bool(proxy_config.get('enable')) and bool(proxy_config.get('apply_to', {}).get('email_fetch', True))
-        proxy_url = proxy_config.get('url')
-        # Also set environment proxies so token refresh flows via requests respect it
-        if use_proxy and proxy_url:
-            for key in ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy"]:
-                os.environ[key] = proxy_url
-    if use_proxy and proxy_url:
-        authed_http = _build_http_with_proxy(creds, proxy_url)
-        return build("gmail", "v1", http=authed_http)
-    return build("gmail", "v1", credentials=creds)
 
 def fetch_emails(service, query):
     """Fetch emails based on the query."""
@@ -171,12 +114,13 @@ def get_email_details(service, message_id):
         print(f"An error occurred while fetching email {message_id}: {error}")
         return None
 
-def get_scholar_alert_emails(last_run_timestamp=None, proxy_config: dict = None):
+def get_scholar_alert_emails(last_run_timestamp=None):
     """
     Fetches Google Scholar alert emails since the last run.
     If last_run_timestamp is None, fetches all scholar alerts (for the first run).
     """
-    service = _build_gmail_service(proxy_config=proxy_config)
+    creds = get_credentials()
+    service = build("gmail", "v1", credentials=creds)
     
     query = "from:scholaralerts-noreply@google.com"
     if last_run_timestamp:

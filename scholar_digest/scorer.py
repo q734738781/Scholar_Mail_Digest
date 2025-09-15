@@ -5,8 +5,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-import os # For API keys and proxy env
-from urllib.parse import urlparse
+import os # For API keys
 
 import time
 import random
@@ -19,26 +18,7 @@ def load_config():
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-def _apply_proxy_env_if_enabled(proxy_config: dict, apply_to_flag: bool):
-    """Set environment proxy variables based on config for libraries that honor env.
-    This supports SOCKS by using ALL_PROXY, plus HTTP(S)_PROXY fallbacks.
-    """
-    if not proxy_config or not proxy_config.get('enable') or not apply_to_flag:
-        return
-    proxy_url = proxy_config.get('url')
-    if not proxy_url:
-        return
-    # Set both upper and lower case for robustness
-    for key in ["ALL_PROXY", "HTTPS_PROXY", "HTTP_PROXY", "all_proxy", "https_proxy", "http_proxy"]:
-        os.environ[key] = proxy_url
-
-def _requests_proxies_from_url(proxy_url: str):
-    if not proxy_url:
-        return None
-    parsed = urlparse(proxy_url)
-    if not parsed.scheme or not parsed.hostname:
-        return None
-    return {"http": proxy_url, "https": proxy_url}
+ 
 
 # Pydantic model for JSON output parsing
 class ArticleScore(BaseModel):
@@ -51,11 +31,7 @@ def get_llm_instance(llm_config):
 
     provider, model_name = model_identifier.split(":", 1) if ":" in model_identifier else ("openai", model_identifier)
 
-    # Apply proxy env if configured for LLM
-    full_config = load_config()
-    proxy_cfg = full_config.get('proxy', {}) if isinstance(full_config, dict) else {}
-    apply_to_llm = bool(proxy_cfg.get('apply_to', {}).get('llm', True))
-    _apply_proxy_env_if_enabled(proxy_cfg, apply_to_llm)
+    
 
     if provider.lower() == "openai":
         api_key = os.getenv("OPENAI_API_KEY")
@@ -147,42 +123,53 @@ def score_articles(articles_df):
         return articles_df
 
     print(f"Scoring {len(articles_df)} articles using LLM ({llm_config.get('model')})...")
-    # TODO: Parallel processing for scoring
-    for index, row in articles_df.iterrows():
-        title = str(row['title'] if pd.notna(row['title']) else "")
-        summary = str(row['summary'] if pd.notna(row['summary']) else "")
-        
-        include_keywords = config.get('keywords', {}).get('include', [])
-        exclude_keywords = config.get('keywords', {}).get('exclude', [])
-        
-        text_to_check = (title + " " + summary).lower()
-        
-        excluded = False
+
+    # Parallel processing support
+    scoring_cfg = config.get('scoring', {}) or {}
+    parallel_cfg = scoring_cfg.get('parallel', {}) or {}
+    enable_parallel = bool(parallel_cfg.get('enable', False))
+    max_workers = int(parallel_cfg.get('workers', 4))
+
+    include_keywords = config.get('keywords', {}).get('include', [])
+    exclude_keywords = config.get('keywords', {}).get('exclude', [])
+
+    def score_one(row_dict):
+        title_local = str(row_dict.get('title') if pd.notna(row_dict.get('title')) else "")
+        summary_local = str(row_dict.get('summary') if pd.notna(row_dict.get('summary')) else "")
+        text_to_check_local = (title_local + " " + summary_local).lower()
+
         if exclude_keywords:
             for ex_kw in exclude_keywords:
-                if ex_kw.lower() in text_to_check:
-                    results.append({'hash': row.get('hash'), 'score': 'Low', 'reason': f'Auto-excluded by keyword: {ex_kw}'})
-                    excluded = True
-                    break
-        if excluded:
-            continue
-
+                if ex_kw.lower() in text_to_check_local:
+                    return {'hash': row_dict.get('hash'), 'score': 'Low', 'reason': f'Auto-excluded by keyword: {ex_kw}'}
         try:
-            # Ensure title and summary are not None before passing to LLM
-            response = chain.invoke({"title": title, "summary": summary})
+            response_local = chain.invoke({"title": title_local, "summary": summary_local})
+            return {'hash': row_dict.get('hash'), 'score': response_local['score'], 'reason': response_local['reason']}
+        except Exception as e_local:
+            print(f"Error scoring article '{title_local[:50]}...': {e_local}")
+            return {'hash': row_dict.get('hash'), 'score': 'Error', 'reason': str(e_local)}
 
-            results.append({
-                'hash': row.get('hash'), 
-                'score': response['score'], 
-                'reason': response['reason']
-            })
+    if enable_parallel and max_workers > 1:
+        print(f"Parallel scoring enabled: workers={max_workers}")
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            rows = [row._asdict() if hasattr(row, "_asdict") else row.to_dict() for _, row in articles_df.iterrows()]
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_hash = {executor.submit(score_one, row_dict): row_dict.get('hash') for row_dict in rows}
+                for future in as_completed(future_to_hash):
+                    try:
+                        result = future.result()
+                        if result is not None:
+                            results.append(result)
+                    except Exception as e:
+                        print(f"Unexpected error in parallel worker: {e}")
         except Exception as e:
-            print(f"Error scoring article '{title[:50]}...': {e}")
-            results.append({
-                'hash': row.get('hash'),
-                'score': 'Error', 
-                'reason': str(e)
-            })
+            print(f"Parallel scoring failed, falling back to sequential processing. Error: {e}")
+            for _, row in articles_df.iterrows():
+                results.append(score_one(row.to_dict()))
+    else:
+        for _, row in articles_df.iterrows():
+            results.append(score_one(row.to_dict()))
     
     scored_df = pd.DataFrame(results)
     
@@ -227,11 +214,6 @@ def enrich_articles_with_web_content(articles_df):
         return articles_df
 
     print(f"Enriching {len(articles_df)} articles with web content...")
-    # Apply proxy for enrichment (used by requests/newspaper3k via env)
-    proxy_cfg = config.get('proxy', {}) if isinstance(config, dict) else {}
-    apply_to_enrichment = bool(proxy_cfg.get('apply_to', {}).get('enrichment', True))
-    _apply_proxy_env_if_enabled(proxy_cfg, apply_to_enrichment)
-    requests_proxies = _requests_proxies_from_url(proxy_cfg.get('url') if proxy_cfg else None) if apply_to_enrichment else None
     full_summaries = []
     for index, row in articles_df.iterrows():
         url = row['link']
@@ -252,7 +234,7 @@ def enrich_articles_with_web_content(articles_df):
             else:
                 import requests
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-                response = requests.get(url, headers=headers, timeout=10, proxies=requests_proxies)
+                response = requests.get(url, headers=headers, timeout=10)
                 response.raise_for_status()
                 doc = ReadabilityDocument(response.content)
                 from bs4 import BeautifulSoup
