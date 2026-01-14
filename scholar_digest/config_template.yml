@@ -6,7 +6,7 @@ keywords:
   include: ["catalyst", "DFT"] # The keyword information will be integrated
   exclude: []
 llm:
-  model: "google:gemini-2.5-pro-preview-05-06" # Examples: "openai:gpt-3.5-turbo", "google:gemini-pro", "mock:some-name"
+  model: "google:gemini-3-pro-preview" # Examples: "openai:gpt-3.5-turbo", "google:gemini-pro", "mock:some-name"
   temperature: 0.1
 scoring:
   high_threshold: High

@@ -28,6 +28,7 @@ class ArticleScore(BaseModel):
 def get_llm_instance(llm_config):
     model_identifier = llm_config.get("model", "openai:gpt-3.5-turbo") # Default to openai
     temperature = llm_config.get("temperature", 0.2)
+    model_kwargs = llm_config.get("model_kwargs", {})
 
     provider, model_name = model_identifier.split(":", 1) if ":" in model_identifier else ("openai", model_identifier)
 
@@ -38,14 +39,14 @@ def get_llm_instance(llm_config):
         if not api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set for OpenAI models.")
         print(f"Using OpenAI model: {model_name} with temperature: {temperature}")
-        return ChatOpenAI(model_name=model_name, temperature=temperature, openai_api_key=api_key)
+        return ChatOpenAI(model_name=model_name, temperature=temperature, openai_api_key=api_key, **model_kwargs)
     elif provider.lower() == "google":
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set for Google models.")
         print(f"Using Google model: {model_name} with temperature: {temperature}")
         # For Google, model_name is often just like 'gemini-pro'
-        return ChatGoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=api_key, convert_system_message_to_human=True)
+        return ChatGoogleGenerativeAI(model=model_name, temperature=temperature, google_api_key=api_key, convert_system_message_to_human=True, **model_kwargs)
     # Add other providers here as elif blocks
     # Example MockLLM as fallback or for testing if no provider matches
     # elif provider.lower() == "mock":
