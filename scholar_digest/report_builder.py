@@ -13,16 +13,16 @@ def load_config():
     with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
-def get_articles_for_report(csv_file_path, start_timestamp: float = None):
+def get_articles_for_report(csv_file_path, article_hashes: set = None):
     """
-    Loads articles from CSV, filters by score thresholds, and optionally by start_timestamp.
+    Loads articles from CSV, filters by score thresholds, and optionally by article hashes.
     Sorts them by score and then by email_date.
+    If article_hashes is provided, only articles with matching hashes are included.
     """
     config = load_config()
     scoring_config = config.get('scoring', {})
     high_threshold = scoring_config.get('high_threshold', 'High')
     medium_threshold = scoring_config.get('medium_threshold', 'Medium')
-    # Low threshold articles typically not included unless specified otherwise
 
     try:
         df = pd.read_csv(csv_file_path)
@@ -38,35 +38,19 @@ def get_articles_for_report(csv_file_path, start_timestamp: float = None):
 
     if 'score' not in df.columns:
         print("Warning: 'score' column not found in CSV. Cannot filter by score.")
-        # Potentially return all articles or an empty DF depending on desired behavior
-        # For now, let's assume unscored articles might still be of interest for a raw report
-        # or filter them out if a score is strictly required.
-        # df['score'] = 'N/A' # Or filter: return df[df['score'].notna()]
-        return df # Return all if no score column, or handle as per requirement
+        return df
 
-    # Define the order of scores
-    score_order = [high_threshold, medium_threshold, 'Low'] # Add other scores if they exist
+    score_order = [high_threshold, medium_threshold, 'Low']
     df['score_cat'] = pd.Categorical(df['score'], categories=score_order, ordered=True)
 
-    # Filter articles: include High and Medium. Add Low if explicitly desired for reports.
-    # For now, only High and Medium as per typical digest needs.
     report_articles_df = df[df['score'].isin([high_threshold, medium_threshold])].copy()
-    
-    # Filter by start_timestamp if provided
-    if start_timestamp is not None and 'email_date' in report_articles_df.columns:
-        # Ensure email_date is numeric for comparison
-        report_articles_df['email_date'] = pd.to_numeric(report_articles_df['email_date'], errors='coerce')
-        report_articles_df.dropna(subset=['email_date'], inplace=True) # Drop rows where conversion failed
-        
-        report_articles_df = report_articles_df[report_articles_df['email_date'] >= start_timestamp].copy()
-        print(f"Filtered articles for report on or after {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}, {len(report_articles_df)} remaining.")
-    elif start_timestamp is not None:
-        print(f"Warning: start_timestamp provided for report, but 'email_date' column not found. Cannot filter by date.")
 
+    if article_hashes is not None and 'hash' in report_articles_df.columns:
+        report_articles_df = report_articles_df[report_articles_df['hash'].isin(article_hashes)].copy()
+        print(f"Filtered report to {len(report_articles_df)} article(s) matching provided hashes.")
 
     report_articles_df.sort_values(by=['score_cat', 'email_date'], ascending=[True, False], inplace=True)
-    
-    # Convert email_date from timestamp to readable string if it exists
+
     if 'email_date' in report_articles_df.columns:
         report_articles_df['email_date_readable'] = report_articles_df['email_date'].apply(
             lambda x: datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M') if pd.notna(x) else 'N/A'
@@ -205,24 +189,24 @@ if __name__ == "__main__":
     sample_df.to_csv(dummy_csv_path, index=False)
     print(f"Created dummy CSV for report generation: {dummy_csv_path}")
 
-    # 1. Load articles for the report (original test - all relevant articles)
-    print("\n--- Loading all relevant articles for report (original test) --- ")
+    # 1. Load articles for the report (all relevant articles)
+    print("\n--- Loading all relevant articles for report --- ")
     articles_to_report_all = get_articles_for_report(dummy_csv_path)
     if not articles_to_report_all.empty:
         print(f"Loaded {len(articles_to_report_all)} articles for the report:")
         print(articles_to_report_all[['title', 'score', 'email_date_readable']])
     else:
-        print("No articles loaded for the initial report test.")
+        print("No articles loaded for the report test.")
 
-    # Test with a timestamp (e.g., only articles from May 20th onwards)
-    print("\n--- Loading articles for report with timestamp filter --- ")
-    test_start_timestamp = datetime(2024,5,20,0,0,0).timestamp()
-    articles_to_report_filtered = get_articles_for_report(dummy_csv_path, start_timestamp=test_start_timestamp)
+    # Test with hash filter (e.g., only specific articles)
+    print("\n--- Loading articles for report with hash filter --- ")
+    test_hashes = {'h1', 'h4'}
+    articles_to_report_filtered = get_articles_for_report(dummy_csv_path, article_hashes=test_hashes)
     if not articles_to_report_filtered.empty:
-        print(f"Loaded {len(articles_to_report_filtered)} articles for the filtered report (since {datetime.fromtimestamp(test_start_timestamp).strftime('%Y-%m-%d')}):")
+        print(f"Loaded {len(articles_to_report_filtered)} articles for the filtered report (hashes={test_hashes}):")
         print(articles_to_report_filtered[['title', 'score', 'email_date_readable']])
     else:
-        print(f"No articles loaded for the filtered report (since {datetime.fromtimestamp(test_start_timestamp).strftime('%Y-%m-%d')}).")
+        print(f"No articles loaded for the filtered report (hashes={test_hashes}).")
 
     # 2. Generate Markdown (using all articles from the first load for this example)
     print("\n--- Generating Markdown Report (using all loaded articles from original test) --- ")

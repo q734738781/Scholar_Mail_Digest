@@ -40,24 +40,25 @@ def save_articles(articles_data, use_sqlite=True):
     Saves new articles to CSV and optionally to SQLite, performing deduplication.
     articles_data is a list of dicts, each dict must have 'title', 'link', 'summary'.
     It can also have 'email_id', 'email_date', 'score', 'reason', 'full_text_summary'.
+    Returns a DataFrame of newly added (non-duplicate) articles.
     """
+    expected_cols = ['hash', 'title', 'link', 'summary', 'email_id', 'email_date',
+                     'score', 'reason', 'full_text_summary', 'added_at']
+
     if not articles_data:
         print("No new articles to save.")
-        return
+        return pd.DataFrame(columns=expected_cols)
 
     os.makedirs(REPORT_DIR, exist_ok=True)
 
     new_articles_df = pd.DataFrame(articles_data)
     if 'title' not in new_articles_df.columns:
         print("Error: 'title' column missing in articles data.")
-        return
+        return pd.DataFrame(columns=expected_cols)
 
     new_articles_df["hash"] = new_articles_df["title"].apply(get_title_hash)
     new_articles_df["added_at"] = datetime.now().isoformat()
     
-    # Ensure all expected columns are present, fill with None if not
-    expected_cols = ['hash', 'title', 'link', 'summary', 'email_id', 'email_date', 
-                     'score', 'reason', 'full_text_summary', 'added_at'] 
     for col in expected_cols:
         if col not in new_articles_df.columns:
             new_articles_df[col] = None
@@ -144,17 +145,8 @@ def save_articles(articles_data, use_sqlite=True):
                      print(f"{inserted_count} articles inserted individually into SQLite after batch error.")
         else:
             print(f"No new unique articles to insert into {DB_FILE}.")
-            
-        # Ensure table has all columns (useful if schema evolves)
-        # This is a simple way; a more robust migration system would be better for complex changes.
-        # for col in expected_cols:
-        #     if not table.has_column(col):
-        #         try:
-        #             # Attempt to add with a default type; adjust as needed
-        #             db.execute(f"ALTER TABLE articles ADD COLUMN {col} TEXT") 
-        #             print(f"Added missing column '{col}' to SQLite table 'articles'.")
-        #         except Exception as e:
-        #             print(f"Could not add column {col} to SQLite: {e}")
+
+    return new_articles_df
 
 
 def load_all_articles_from_csv():

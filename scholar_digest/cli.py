@@ -82,64 +82,50 @@ def fetch(since: str = None):
         parsed_from_email = parser.parse_scholar_email_html(email_data['body_html'])
         for article in parsed_from_email:
             article['email_id'] = email_data['id']
-            article['email_date'] = email_data['date'] # This is already a timestamp
+            article['email_date'] = email_data['date']
             all_parsed_articles.append(article)
         if latest_email_date_ts is None or email_data['date'] > latest_email_date_ts:
             latest_email_date_ts = email_data['date']
             
     if not all_parsed_articles:
         typer.echo("No articles found in fetched emails. Exiting.")
-        if latest_email_date_ts: # Still update timestamp if emails were fetched but no articles found
+        if latest_email_date_ts:
              storage.update_last_run_timestamp(latest_email_date_ts)
         raise typer.Exit()
     typer.echo(f"Parsed {len(all_parsed_articles)} articles from emails.")
-    # TODO: Get full abstract for articles (emails will only provide some)
 
-    # 3. Save articles (includes deduplication)
+    # 3. Save articles (includes deduplication), returns only newly added articles
     typer.echo("Step 3: Storing articles...")
-    # save_articles expects a list of dicts. It handles deduplication against existing CSV/DB.
-    storage.save_articles(all_parsed_articles, use_sqlite=True) # Or use config for sqlite preference
-    
-    # After saving, new articles are in the CSV. We need to load them for scoring.
-    # For efficiency, ideally, save_articles would return the *newly added* articles DataFrame.
-    # For now, we load all, then filter out already scored ones before sending to LLM.
-    articles_for_scoring_df = storage.load_all_articles_from_csv()
-    if articles_for_scoring_df.empty:
-        typer.echo("No articles available in storage for scoring. This might be an error or all were duplicates.")
+    new_articles_df = storage.save_articles(all_parsed_articles, use_sqlite=True)
+
+    if new_articles_df.empty:
+        typer.echo("All articles are duplicates. No new articles to process.")
         if latest_email_date_ts:
             storage.update_last_run_timestamp(latest_email_date_ts)
         raise typer.Exit()
 
-    # Filter out articles that already have a score (unless we want to re-score)
-    # Assuming 'score' column exists and is None/NaN for unscored articles
-    if 'score' in articles_for_scoring_df.columns:
-        unscored_articles_df = articles_for_scoring_df[articles_for_scoring_df['score'].isna()].copy()
-    else:
-        unscored_articles_df = articles_for_scoring_df.copy()
-        unscored_articles_df['score'] = None # Ensure column exists
-        unscored_articles_df['reason'] = None
+    new_hashes = set(new_articles_df['hash'].tolist())
+    typer.echo(f"{len(new_articles_df)} new unique articles to process.")
 
-    if unscored_articles_df.empty:
-        typer.echo("No new (unscored) articles found in storage to send to LLM.")
-    else:
-        typer.echo(f"{len(unscored_articles_df)} articles need scoring.")
-        # 4. Score articles
-        typer.echo("Step 4: Scoring articles...")
-        scored_articles_df = scorer.score_articles(unscored_articles_df) # This returns a DF with new scores
-        storage.update_article_scores_in_csv(scored_articles_df[scored_articles_df['score'].notna()])
-        typer.echo(f"Scored {len(scored_articles_df[scored_articles_df['score'].notna()])} articles.")
+    # 4. Score new articles
+    typer.echo("Step 4: Scoring articles...")
+    scored_articles_df = scorer.score_articles(new_articles_df)
+    storage.update_article_scores_in_csv(scored_articles_df[scored_articles_df['score'].notna()])
+    typer.echo(f"Scored {len(scored_articles_df[scored_articles_df['score'].notna()])} articles.")
 
-    # 5. Optional Enrichment (if enabled)
-    articles_for_enrichment_df = storage.load_all_articles_from_csv()
+    # 5. Optional Enrichment (only on new high/medium articles)
+    scoring_config = config.get('scoring', {})
+    high_threshold = scoring_config.get('high_threshold', 'High')
+    medium_threshold = scoring_config.get('medium_threshold', 'Medium')
+
     if config.get('enrichment', {}).get('enable_web_article', False):
-        typer.echo("Step 5: Enriching articles with web content (if enabled and not already done)...")
-        # Filter articles that need enrichment (e.g., no full_text_summary or specific scores)
-        if 'full_text_summary' not in articles_for_enrichment_df.columns:
-            articles_for_enrichment_df['full_text_summary'] = None
-        
-        needs_enrichment_df = articles_for_enrichment_df[
-            articles_for_enrichment_df['full_text_summary'].isna() &
-            articles_for_enrichment_df['score'].isin([config['scoring']['high_threshold'], config['scoring']['medium_threshold']])
+        typer.echo("Step 5: Enriching articles with web content...")
+        if 'full_text_summary' not in scored_articles_df.columns:
+            scored_articles_df['full_text_summary'] = None
+
+        needs_enrichment_df = scored_articles_df[
+            scored_articles_df['full_text_summary'].isna() &
+            scored_articles_df['score'].isin([high_threshold, medium_threshold])
         ].copy()
 
         if not needs_enrichment_df.empty:
@@ -151,26 +137,16 @@ def fetch(since: str = None):
     else:
         typer.echo("Step 5: Web enrichment disabled in config.")
 
-    # 6. Build Report
+    # 6. Build Report (only from newly added articles, filtered by hash)
     typer.echo("Step 6: Building report...")
-    
     csv_file_path = os.path.join(config.get('output', {}).get('report_dir', 'reports'), "scholar_articles.csv")
-
-    # Pass start_timestamp directly to get_articles_for_report
-    # report_builder.get_articles_for_report will handle the filtering.
-    articles_for_report_df = report_builder.get_articles_for_report(csv_file_path, start_timestamp=start_timestamp)
+    articles_for_report_df = report_builder.get_articles_for_report(csv_file_path, article_hashes=new_hashes)
 
     if articles_for_report_df.empty:
-        # Message depends on whether filtering was active
-        if start_timestamp:
-            typer.echo(f"No articles found for reporting on or after {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}.")
-        else:
-            typer.echo("No articles found suitable for reporting by get_articles_for_report.")
-        # report_main will also print its own "No articles suitable" message if it receives an empty df, but this gives more context.
-        _generate_report_logic(articles_df=articles_for_report_df, config=config) # Call _generate_report_logic even if empty, it will handle it
+        typer.echo("No new articles with High or Medium scores for reporting.")
     else:
-        typer.echo(f"Proceeding to generate report with {len(articles_for_report_df)} article(s).")
-        _generate_report_logic(articles_df=articles_for_report_df, config=config)
+        typer.echo(f"Proceeding to generate report with {len(articles_for_report_df)} new article(s).")
+    _generate_report_logic(articles_df=articles_for_report_df, config=config)
 
     # 7. Update last run timestamp
     if latest_email_date_ts:
@@ -227,8 +203,7 @@ def report_command(): # New Typer command for standalone report
     _apply_proxy_env_from_config(config)
     csv_file = os.path.join(config.get('output', {}).get('report_dir', 'reports'), "scholar_articles.csv")
     
-    # Load all reportable articles, no timestamp filter for standalone report
-    articles_to_report_df = report_builder.get_articles_for_report(csv_file_path=csv_file) 
+    articles_to_report_df = report_builder.get_articles_for_report(csv_file_path=csv_file)
     
     if articles_to_report_df.empty:
         typer.echo("No articles suitable for reporting were found in the CSV.")
